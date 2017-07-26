@@ -1,0 +1,112 @@
+#!/bin/bash -ue
+
+function -init {
+    : ${GPG_BIN:=$(which gpg)}
+    : ${ENCRYPT_ARGS:= -qasr $(resolve-id)}
+    : ${DECRYPT_ARGS:= -q}
+    : ${TEMPFILE:=/dev/null}
+
+    exec {DB}<> /dev/tcp/"${PIGEONHOLE_HOST:=172.17.0.2}"/"${PIGEONHOLE_PORT:=6379}"
+    exec {TTY}>&1
+    trap '( -destroy )' EXIT
+}
+
+function -destroy {
+    exec {DB}>&-
+    exec {DB}<&-
+    exec {TTY}>&-
+}
+
+function get {
+    redis-get LPOP "$(resolve-id "$*")" | decrypt
+}
+
+function put {
+    local rcpt
+    local duplex=$(tempfile)
+    trap "rm '$duplex'" EXIT
+    cat > "$duplex"
+    resolve-id "$@" | while read rcpt; do
+	cat "$duplex" | encrypt "$rcpt" | redis-put LPUSH "$rcpt"
+    done
+}
+
+function length {
+    redis-length "$(resolve-id "$*")"
+}
+
+function redis-get {
+    printf "%s \"%s\"\r\n" $1 $2 >&$DB
+    read -u $DB count
+    [[ "${count:1:-1}" -le 0 ]] && return
+    dd bs=1 count=${count:1:-1} status=none <&$DB
+    read <&$DB
+}
+
+function redis-put {
+    local line
+    printf "%s \"%s\" \"" $1 $2
+    while read line; do
+	printf '%s\\n' "${line//\"/\\\"}"
+    done
+    printf "\"\r\n"
+    read -u $DB
+    echo ${REPLY#:} >&$TTY
+} >&$DB
+
+function redis-length {
+    printf "LLEN \"%s\"\r\n" $1 >&$DB
+    read -u $DB count
+    echo ${count:1:-1}
+}
+
+function resolve-id {
+    if [[ ${#@} -gt 0 && ! -z "$1" ]]; then
+	for rcpt in "$@"; do
+	    "${GPG_BIN}" --with-colons --list-public-keys "$rcpt" | read-first-id pub
+	done
+    else
+	"${GPG_BIN}" --with-colons --list-secret-keys | read-first-id sec
+    fi
+}
+
+function read-first-id {
+    local line
+    while read line; do
+	case "$line" in
+	    $1:*)
+		local -a fields=(${line//:/ })
+		if [[ ! -z "${fields[4]}" ]]; then
+		    echo ${fields[4]}
+		    return
+		fi
+		;;
+	esac
+    done
+}
+
+function decrypt {
+    tee "$TEMPFILE" | "${GPG_BIN}"${DECRYPT_ARGS} --decrypt -
+}
+
+function encrypt {
+    "${GPG_BIN}"${ENCRYPT_ARGS} -r $1 --encrypt - | tee "$TEMPFILE"
+}
+
+function inspect {
+    set -o
+    type "$@"
+}
+
+function verbose {
+    [[ "$TEMPFILE" == "/dev/null" ]] && TEMPFILE=$(tempfile -p pigeon)
+    set -o xtrace
+    -main "$@"
+}
+
+function -main {
+    [[ "$(type -t $1)" =~ function ]] && "$@"
+}
+
+-init
+-main "$@"
