@@ -5,6 +5,7 @@ function -init {
     : ${ENCRYPT_ARGS:= -qasr $(resolve-id)}
     : ${DECRYPT_ARGS:= -q}
     : ${TEMPFILE:=/dev/null}
+    : ${ENCODING=}
 
     exec {DB}<> /dev/tcp/"${PIGEONHOLE_HOST:=172.17.0.2}"/"${PIGEONHOLE_PORT:=6379}"
     exec {TTY}>&1
@@ -18,7 +19,7 @@ function -destroy {
 }
 
 function get {
-    redis-get LPOP "$(resolve-id "$*")" | decrypt
+    redis-get RPOP "$(resolve-id "$*")" | decode
 }
 
 function put {
@@ -27,7 +28,7 @@ function put {
     trap "rm '$duplex'" EXIT
     cat > "$duplex"
     resolve-id "$@" | while read rcpt; do
-	cat "$duplex" | encrypt "$rcpt" | redis-put LPUSH "$rcpt"
+	cat "$duplex" | encode "$rcpt" | redis-put LPUSH "$rcpt"
     done
 }
 
@@ -85,12 +86,58 @@ function read-first-id {
     done
 }
 
-function decrypt {
-    tee "$TEMPFILE" | "${GPG_BIN}"${DECRYPT_ARGS} --decrypt -
+function sign {
+    ENCODING=sign
+    main "$@"
 }
 
-function encrypt {
-    "${GPG_BIN}"${ENCRYPT_ARGS} -r $1 --encrypt - | tee "$TEMPFILE"
+function raw {
+    ENCODING=raw
+    main "$@"
+}
+
+function validate-encoding {
+    [[ "$ENCODING" != ?(raw|sign|base64) ]] && ENCODING=
+}
+
+function decode {
+    validate-encoding && tee "$TEMPFILE" | decode-$ENCODING
+}
+
+function decode-raw {
+    cat
+}
+
+function decode-base64 {
+    base64 --decode
+}
+
+function decode-sign {
+    "${GPG_BIN}"${DECRYPT_ARGS} --output - --verify -
+}
+
+function decode- {
+    "${GPG_BIN}"${DECRYPT_ARGS} --decrypt -
+}
+
+function encode {
+    validate-encoding && tee "$TEMPFILE" | encode-$ENCODING "$@"
+}
+
+function encode-raw {
+    cat
+}
+
+function encode-base64 {
+    base64
+}
+
+function encode-sign {
+    "${GPG_BIN}"${ENCRYPT_ARGS} --sign -
+}
+
+function encode- {
+    "${GPG_BIN}"${ENCRYPT_ARGS} -r $1 --encrypt -
 }
 
 function inspect {
