@@ -1,5 +1,8 @@
 #!/bin/bash -ue
 
+PIGEONHOLE_HOST=redis-19015.c1.ap-southeast-1-1.ec2.cloud.redislabs.com
+PIGEONHOLE_PORT=19015
+
 function -init {
     : ${GPG_BIN:=$(which gpg)}
     : ${ENCRYPT_ARGS:= -qasr $(resolve-id)}
